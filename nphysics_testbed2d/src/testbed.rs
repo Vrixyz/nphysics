@@ -49,8 +49,32 @@ fn usage(exe_name: &str) {
     println!("    b      - draw the bounding boxes.");
 }
 
-pub struct Testbed {
-    world: World<f32>,
+pub trait WorldOwner {
+    fn update(&mut self);
+    fn world_mut(&mut self) -> &mut World<f32>;
+}
+
+struct DefaultWorldOwner {
+    world: World<f32>
+}
+
+impl DefaultWorldOwner {
+    pub fn new(world: World<f32>) -> DefaultWorldOwner {
+        DefaultWorldOwner {world }
+    }
+}
+
+impl WorldOwner for DefaultWorldOwner {
+    fn update(&mut self) {
+        self.world.step();
+    }
+    fn world_mut(&mut self) -> &mut World<f32> {
+        &mut self.world
+    }
+}
+
+pub struct Testbed<'a> {
+    world_owner: &'a mut WorldOwner,
     window: Option<Box<Window>>,
     graphics: GraphicsManager,
     nsteps: usize,
@@ -67,17 +91,53 @@ pub struct Testbed {
     grabbed_object_constraint: Option<ConstraintHandle>,
 }
 
-impl Testbed {
-    pub fn new_empty() -> Testbed {
+impl<'a : 'static > Testbed<'a> {
+    /*pub fn new_empty() -> Testbed<'a> {
         let graphics = GraphicsManager::new();
-        let world = World::new();
+
+        let mut window = Box::new(Window::new("nphysics: 2d demo"));
+        window.set_background_color(0.9, 0.9, 0.9);
+        window.set_framerate_limit(Some(60));
+
+        static world_owner : DefaultWorldOwner = DefaultWorldOwner::new(World::new());
+        Testbed {
+            world_owner: &mut world_owner,
+            callbacks: Vec::new(),
+            window: Some(window),
+            graphics: graphics,
+            nsteps: 1,
+            time: 0.0,
+            hide_counters: false,
+            persistant_contacts: HashMap::new(),
+
+            font: Font::default(),
+            running: RunMode::Running,
+            draw_colls: false,
+            cursor_pos: Point2::new(0.0f32, 0.0),
+            grabbed_object: None,
+            grabbed_object_constraint: None,
+        }
+    }*/
+
+/*
+    pub fn new(world: World<f32>) -> Testbed<'static> {
+        let mut res = Testbed::new_empty();
+
+        static world_owner : DefaultWorldOwner = DefaultWorldOwner::new(world);
+
+        res.set_world_owner(&mut world_owner);
+
+        res
+    }*/
+    pub fn new_with_world_owner(world_owner: &'a mut impl WorldOwner) -> Testbed<'a> {
+        let graphics = GraphicsManager::new();
 
         let mut window = Box::new(Window::new("nphysics: 2d demo"));
         window.set_background_color(0.9, 0.9, 0.9);
         window.set_framerate_limit(Some(60));
 
         Testbed {
-            world: world,
+            world_owner: world_owner,
             callbacks: Vec::new(),
             window: Some(window),
             graphics: graphics,
@@ -95,14 +155,6 @@ impl Testbed {
         }
     }
 
-    pub fn new(world: World<f32>) -> Testbed {
-        let mut res = Testbed::new_empty();
-
-        res.set_world(world);
-
-        res
-    }
-
     pub fn set_number_of_steps_per_frame(&mut self, nsteps: usize) {
         self.nsteps = nsteps
     }
@@ -115,15 +167,16 @@ impl Testbed {
         self.hide_counters = false;
     }
 
-    pub fn set_world(&mut self, world: World<f32>) {
-        self.world = world;
-        self.world.enable_performance_counters();
+    pub fn set_world_owner(&mut self, world_owner: &'a mut WorldOwner) {
+        self.world_owner = world_owner;
+        let world = self.world_owner.world_mut();
+        world.enable_performance_counters();
 
         self.graphics.clear(self.window.as_mut().unwrap());
 
-        for co in self.world.colliders() {
+        for co in world.colliders() {
             self.graphics
-                .add(self.window.as_mut().unwrap(), co.handle(), &self.world);
+                .add(self.window.as_mut().unwrap(), co.handle(), &world);
         }
     }
 
@@ -139,8 +192,8 @@ impl Testbed {
         self.graphics.set_collider_color(collider, color);
     }
 
-    pub fn world(&self) -> &World<f32> {
-        &self.world
+    pub fn world(&mut self) -> &World<f32> {
+        self.world_owner.world_mut()
     }
 
     pub fn graphics_mut(&mut self) -> &mut GraphicsManager {
@@ -203,7 +256,7 @@ impl Testbed {
     }
 }
 
-impl State for Testbed {
+impl State for Testbed<'static> {
     fn cameras_and_effect(
         &mut self,
     ) -> (
@@ -215,6 +268,10 @@ impl State for Testbed {
     }
 
     fn step(&mut self, window: &mut Window) {
+        
+        // TODO: #131: Input commented out temporarily to focus on world update
+        /*
+
         for mut event in window.events().iter() {
             match event.value {
                 //         WindowEvent::MouseButton(MouseButton::Button2, Action::Press, Key::LControl) |
@@ -431,27 +488,33 @@ impl State for Testbed {
             //      }
                 _ => {}
             }
-        }
+        }*/
 
         if self.running != RunMode::Stop {
             for _ in 0..self.nsteps {
                 for f in &self.callbacks {
-                    f(&mut self.world, &mut self.graphics, self.time)
+
+                    let mut world = self.world_owner.world_mut();
+                    f(&mut world, &mut self.graphics, self.time)
                 }
-                self.world.step();
+                self.world_owner.update();
+
+                let mut world = self.world_owner.world_mut();
                 if !self.hide_counters {
-                    println!("{}", self.world.performance_counters());
+                    println!("{}", world.performance_counters());
                 }
-                self.time += self.world.timestep();
+                self.time += world.timestep();
             }
 
-            self.graphics.draw(&self.world, window);
+            let mut world = self.world_owner.world_mut();
+            self.graphics.draw(&world, window);
         }
 
         if self.draw_colls {
+            let mut world = self.world_owner.world_mut();
             draw_collisions(
                 window,
-                &mut self.world,
+                &mut world,
                 &mut self.persistant_contacts,
                 self.running != RunMode::Stop,
             );
@@ -465,7 +528,8 @@ impl State for Testbed {
 
         if true {
             //running != RunMode::Stop {
-            window.draw_text(
+            // TODO: #131: commented out to focus on world update
+            /*window.draw_text(
                 &format!(
                     "Simulation time: {:.*}sec.",
                     4,
@@ -475,7 +539,7 @@ impl State for Testbed {
                 60.0,
                 &self.font,
                 &color,
-            );
+            );*/
         } else {
             window.draw_text("Paused", &Point2::origin(), 60.0, &self.font, &color);
         }
